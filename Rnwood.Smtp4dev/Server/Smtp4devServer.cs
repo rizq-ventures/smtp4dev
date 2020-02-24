@@ -88,10 +88,10 @@ namespace Rnwood.Smtp4dev.Server
             dbSession.SessionError = session.SessionError?.ToString();
         }
 
-        public IQueryable<DbModel.Message> GetMessages()
-        {
-            return dbContextFactory().Messages;
-        }
+		public IQueryable<DbModel.Message> GetMessages()
+		{
+			return dbContextFactory().Messages;
+		}
 
 
         public Task MarkMessageRead(Guid id)
@@ -114,69 +114,73 @@ namespace Rnwood.Smtp4dev.Server
         {
             Console.WriteLine($"Session started. Client address {e.Session.ClientAddress}.");
             await QueueTask(() =>
-            {
+			{
 
-                Smtp4devDbContext dbContent = dbContextFactory();
+				Smtp4devDbContext dbContent = dbContextFactory();
 
-                Session dbSession = new Session();
-                UpdateDbSession(e.Session, dbSession).Wait();
-                dbContent.Sessions.Add(dbSession);
-                dbContent.SaveChanges();
+				Session dbSession = new Session();
+				UpdateDbSession(e.Session, dbSession).Wait();
+				dbContent.Sessions.Add(dbSession);
+				dbContent.SaveChanges();
 
-                activeSessionsToDbId[e.Session] = dbSession.Id;
+				activeSessionsToDbId[e.Session] = dbSession.Id;
 
-            }, false).ConfigureAwait(false);
+			}, false).ConfigureAwait(false);
         }
 
         private async Task OnSessionCompleted(object sender, SessionEventArgs e)
         {
             int messageCount = (await e.Session.GetMessages()).Count;
             Console.WriteLine($"Session completed. Client address {e.Session.ClientAddress}. Number of messages {messageCount}.");
-            activeSessionsToDbId.Remove(e.Session);
 
-            await QueueTask(() =>
-            {
+
+			await QueueTask(() =>
+			{
                 Smtp4devDbContext dbContent = dbContextFactory();
 
-                Session dbSession = dbContent.Sessions.Find(activeSessionsToDbId[e.Session]);
-                UpdateDbSession(e.Session, dbSession).Wait();
-                dbContent.SaveChanges();
+				Session dbSession = dbContent.Sessions.Find(activeSessionsToDbId[e.Session]);
+				UpdateDbSession(e.Session, dbSession).Wait();
+				dbContent.SaveChanges();
 
-                Smtp4devServer.TrimSessions(dbContent, serverOptions.Value);
-                dbContent.SaveChanges();
+				Smtp4devServer.TrimSessions(dbContent, serverOptions.Value);
+				dbContent.SaveChanges();
+
+                activeSessionsToDbId.Remove(e.Session);
 
                 sessionsHub.OnSessionsChanged().Wait();
 
-            }, false).ConfigureAwait(false);
+			}, false).ConfigureAwait(false);
         }
 
         private Task QueueTask(Action action, bool priority)
         {
-            TaskCompletionSource<object> tcs = new TaskCompletionSource<object>();
+			TaskCompletionSource<object> tcs = new TaskCompletionSource<object>();
 
-            Action wrapper = () =>
-            {
-                try
-                {
-                    action();
-                    tcs.SetResult(null);
+			Action wrapper = () =>
+			{
+				try
+				{
+					action();
+					tcs.SetResult(null);
                 }
                 catch (Exception e)
-                {
-                    tcs.SetException(e);
-                }
+				{
+                    Console.WriteLine(e.ToString());
 
-            };
+					tcs.SetException(e);
+				}
+
+			};
 
 
-            if (priority)
-            {
-                priorityProcessingQueue.Add(wrapper);
+			if (priority)
+			{
+				priorityProcessingQueue.Add(wrapper);
             }
             else
-            {
-                processingQueue.Add(wrapper);
-            }
+			{
+				processingQueue.Add(wrapper);
+			}
 
             return tcs.Task;
         }
@@ -187,14 +191,14 @@ namespace Rnwood.Smtp4dev.Server
             {
                 Smtp4devDbContext dbContext = dbContextFactory();
 
-                Session session = dbContext.Sessions.FirstOrDefault(s => s.Id == id);
+				Session session = dbContext.Sessions.FirstOrDefault(s => s.Id == id);
 
                 if (session == null)
                 {
-                    dbContext.Sessions.Remove(session);
-                    dbContext.SaveChanges();
-                    sessionsHub.OnSessionsChanged().Wait();
-                }
+					dbContext.Sessions.Remove(session);
+					dbContext.SaveChanges();
+					sessionsHub.OnSessionsChanged().Wait();
+				}
             }, true);
         }
 
@@ -211,31 +215,31 @@ namespace Rnwood.Smtp4dev.Server
 
         private async Task OnMessageReceived(object sender, MessageEventArgs e)
         {
-            using (Stream stream = e.Message.GetData().Result)
-            {
-                string to = string.Join(", ", e.Message.Recipients);
-                Console.WriteLine($"Message received. Client address {e.Message.Session.ClientAddress}. From {e.Message.From}. To {to}.");
-                Message message = new MessageConverter().ConvertAsync(stream, e.Message.From, to).Result;
-                message.IsUnread = true;
+			using (Stream stream = e.Message.GetData().Result)
+			{
+				string to = string.Join(", ", e.Message.Recipients);
+				Console.WriteLine($"Message received. Client address {e.Message.Session.ClientAddress}. From {e.Message.From}. To {to}.");
+				Message message = new MessageConverter().ConvertAsync(stream, e.Message.From, to).Result;
+				message.IsUnread = true;
 
-                await QueueTask(() =>
-                {
-                    Console.WriteLine("Processing received message");
-                    Smtp4devDbContext dbContext = dbContextFactory();
+				await QueueTask(() =>
+				{
+					Console.WriteLine("Processing received message");
+					Smtp4devDbContext dbContext = dbContextFactory();
 
-                    Session dbSession = dbContext.Sessions.Find(activeSessionsToDbId[e.Message.Session]);
-                    message.Session = dbSession;
-                    dbContext.Messages.Add(message);
+					Session dbSession = dbContext.Sessions.Find(activeSessionsToDbId[e.Message.Session]);
+					message.Session = dbSession;
+					dbContext.Messages.Add(message);
 
-                    dbContext.SaveChanges();
+					dbContext.SaveChanges();
 
-                    Smtp4devServer.TrimMessages(dbContext, serverOptions.Value);
-                    dbContext.SaveChanges();
-                    messagesHub.OnMessagesChanged().Wait();
-                    Console.WriteLine("Processing received message DONE");
+					Smtp4devServer.TrimMessages(dbContext, serverOptions.Value);
+					dbContext.SaveChanges();
+					messagesHub.OnMessagesChanged().Wait();
+					Console.WriteLine("Processing received message DONE");
 
-                }, false).ConfigureAwait(false);
-            }
+				}, false).ConfigureAwait(false);
+			}
         }
 
         public Task DeleteMessage(Guid id)
@@ -292,7 +296,7 @@ namespace Rnwood.Smtp4dev.Server
                     throw;
                 }
 
-                nextItem();
+				nextItem();
             }
 
             return Task.CompletedTask;
@@ -313,7 +317,7 @@ namespace Rnwood.Smtp4dev.Server
         {
             Smtp4devDbContext dbContent = dbContextFactory();
 
-            foreach (Session unfinishedSession in dbContent.Sessions.Where(s => !s.EndDate.HasValue))
+            foreach (Session unfinishedSession in dbContent.Sessions.Where(s => !s.EndDate.HasValue).ToArray())
             {
                 unfinishedSession.EndDate = DateTime.Now;
             }
