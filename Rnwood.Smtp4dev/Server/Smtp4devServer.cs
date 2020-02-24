@@ -1,4 +1,12 @@
 ﻿using Microsoft.Extensions.Options;
+using Org.BouncyCastle.Asn1.X509;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Generators;
+using Org.BouncyCastle.Crypto.Prng;
+using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Security;
+using Org.BouncyCastle.Utilities;
+using Org.BouncyCastle.X509;
 using Rnwood.Smtp4dev.DbModel;
 using Rnwood.Smtp4dev.Hubs;
 using Rnwood.SmtpServer;
@@ -7,6 +15,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
@@ -17,8 +26,13 @@ namespace Rnwood.Smtp4dev.Server
         public Smtp4devServer(Func<Smtp4devDbContext> dbContextFactory, IOptions<ServerOptions> serverOptions, MessagesHub messagesHub, SessionsHub sessionsHub)
         {
             this.dbContextFactory = dbContextFactory;
+            System.Security.Cryptography.X509Certificates.X509Certificate cert = CreateSelfSignedCertificate();
 
-            this.smtpServer = new DefaultServer(serverOptions.Value.AllowRemoteConnections, serverOptions.Value.Port);
+            ServerOptions serverOptionsValue = serverOptions.Value;
+            this.smtpServer = new DefaultServer(serverOptionsValue.AllowRemoteConnections, serverOptionsValue.Port,
+                serverOptionsValue.TlsMode == TlsMode.ImplicitTls ? cert : null,
+                serverOptionsValue.TlsMode == TlsMode.StartTls ? cert : null
+            );
             this.smtpServer.MessageReceivedEventHandler += OnMessageReceived;
             this.smtpServer.SessionCompletedEventHandler += OnSessionCompleted;
             this.smtpServer.SessionStartedHandler += OnSessionStarted;
@@ -27,6 +41,36 @@ namespace Rnwood.Smtp4dev.Server
             this.sessionsHub = sessionsHub;
 
             this.serverOptions = serverOptions; ;
+        }
+
+        private static System.Security.Cryptography.X509Certificates.X509Certificate CreateSelfSignedCertificate()
+        {
+            CryptoApiRandomGenerator randomGenerator = new CryptoApiRandomGenerator();
+            SecureRandom random = new SecureRandom(randomGenerator);
+
+            X509V3CertificateGenerator certGenerator = new X509V3CertificateGenerator();
+            certGenerator.SetSubjectDN(new X509Name("CN=" + IPGlobalProperties.GetIPGlobalProperties().HostName));
+            certGenerator.SetIssuerDN(new X509Name("CN=" + IPGlobalProperties.GetIPGlobalProperties().HostName));
+
+            GeneralNames subjectAltName = new GeneralNames(new GeneralName(GeneralName.DnsName, IPGlobalProperties.GetIPGlobalProperties().HostName + "." + IPGlobalProperties.GetIPGlobalProperties().DomainName));
+            certGenerator.AddExtension(X509Extensions.SubjectAlternativeName, false, subjectAltName);
+
+            BigInteger serialNumber = BigIntegers.CreateRandomInRange(BigInteger.One, BigInteger.ValueOf(Int64.MaxValue), random);
+            certGenerator.SetSerialNumber(serialNumber);
+            certGenerator.SetSignatureAlgorithm("SHA256WithRSA");
+
+            certGenerator.SetNotBefore(DateTime.UtcNow.Date);
+            certGenerator.SetNotAfter(DateTime.UtcNow.Date.AddYears(10));
+
+            KeyGenerationParameters keyGenerationParameters = new KeyGenerationParameters(random, 2048);
+
+            RsaKeyPairGenerator keyPairGenerator = new RsaKeyPairGenerator();
+            keyPairGenerator.Init(keyGenerationParameters);
+            AsymmetricCipherKeyPair keypair = keyPairGenerator.GenerateKeyPair();
+            certGenerator.SetPublicKey(keypair.Public);
+            X509Certificate certificate = certGenerator.Generate(keypair.Private, random);
+
+            return new System.Security.Cryptography.X509Certificates.X509Certificate(certificate.GetEncoded());
         }
 
         private IOptions<ServerOptions> serverOptions;
@@ -44,15 +88,16 @@ namespace Rnwood.Smtp4dev.Server
             dbSession.SessionError = session.SessionError?.ToString();
         }
 
-		public IQueryable<DbModel.Message> GetMessages()
-		{
-			return dbContextFactory().Messages;
-		}
+        public IQueryable<DbModel.Message> GetMessages()
+        {
+            return dbContextFactory().Messages;
+        }
 
 
         public Task MarkMessageRead(Guid id)
         {
-            return QueueTask(() => {
+            return QueueTask(() =>
+            {
                 Smtp4devDbContext dbContent = dbContextFactory();
                 DbModel.Message message = dbContent.Messages.FindAsync(id).Result;
 
@@ -69,67 +114,69 @@ namespace Rnwood.Smtp4dev.Server
         {
             Console.WriteLine($"Session started. Client address {e.Session.ClientAddress}.");
             await QueueTask(() =>
-			{
+            {
 
-				Smtp4devDbContext dbContent = dbContextFactory();
+                Smtp4devDbContext dbContent = dbContextFactory();
 
-				Session dbSession = new Session();
-				UpdateDbSession(e.Session, dbSession).Wait();
-				dbContent.Sessions.Add(dbSession);
-				dbContent.SaveChanges();
+                Session dbSession = new Session();
+                UpdateDbSession(e.Session, dbSession).Wait();
+                dbContent.Sessions.Add(dbSession);
+                dbContent.SaveChanges();
 
-				activeSessionsToDbId[e.Session] = dbSession.Id;
+                activeSessionsToDbId[e.Session] = dbSession.Id;
 
-			}, false).ConfigureAwait(false);
+            }, false).ConfigureAwait(false);
         }
 
         private async Task OnSessionCompleted(object sender, SessionEventArgs e)
         {
             int messageCount = (await e.Session.GetMessages()).Count;
             Console.WriteLine($"Session completed. Client address {e.Session.ClientAddress}. Number of messages {messageCount}.");
-			activeSessionsToDbId.Remove(e.Session);
+            activeSessionsToDbId.Remove(e.Session);
 
-			await QueueTask(() =>
-			{
-				Smtp4devDbContext dbContent = dbContextFactory();
+            await QueueTask(() =>
+            {
+                Smtp4devDbContext dbContent = dbContextFactory();
 
-				Session dbSession = dbContent.Sessions.Find(activeSessionsToDbId[e.Session]);
-				UpdateDbSession(e.Session, dbSession).Wait();
-				dbContent.SaveChanges();
+                Session dbSession = dbContent.Sessions.Find(activeSessionsToDbId[e.Session]);
+                UpdateDbSession(e.Session, dbSession).Wait();
+                dbContent.SaveChanges();
 
-				Smtp4devServer.TrimSessions(dbContent, serverOptions.Value);
-				dbContent.SaveChanges();
+                Smtp4devServer.TrimSessions(dbContent, serverOptions.Value);
+                dbContent.SaveChanges();
 
-				sessionsHub.OnSessionsChanged().Wait();
+                sessionsHub.OnSessionsChanged().Wait();
 
-			}, false).ConfigureAwait(false);
+            }, false).ConfigureAwait(false);
         }
 
         private Task QueueTask(Action action, bool priority)
         {
-			TaskCompletionSource<object> tcs = new TaskCompletionSource<object>();
+            TaskCompletionSource<object> tcs = new TaskCompletionSource<object>();
 
-			Action wrapper = () =>
-			{
-				try
-				{
-					action();
-					tcs.SetResult(null);
-				}catch  (Exception e)
-				{
-					tcs.SetException(e);
-				}
+            Action wrapper = () =>
+            {
+                try
+                {
+                    action();
+                    tcs.SetResult(null);
+                }
+                catch (Exception e)
+                {
+                    tcs.SetException(e);
+                }
 
-			};
+            };
 
 
-			if (priority)
-			{
-				priorityProcessingQueue.Add(wrapper);
-			} else
-			{
-				processingQueue.Add(wrapper);
-			}
+            if (priority)
+            {
+                priorityProcessingQueue.Add(wrapper);
+            }
+            else
+            {
+                processingQueue.Add(wrapper);
+            }
 
             return tcs.Task;
         }
@@ -140,13 +187,14 @@ namespace Rnwood.Smtp4dev.Server
             {
                 Smtp4devDbContext dbContext = dbContextFactory();
 
-				Session session = dbContext.Sessions.FirstOrDefault(s => s.Id == id);
+                Session session = dbContext.Sessions.FirstOrDefault(s => s.Id == id);
 
-				if (session == null) {
-					dbContext.Sessions.Remove(session);
-					dbContext.SaveChanges();
-					sessionsHub.OnSessionsChanged().Wait();
-				}
+                if (session == null)
+                {
+                    dbContext.Sessions.Remove(session);
+                    dbContext.SaveChanges();
+                    sessionsHub.OnSessionsChanged().Wait();
+                }
             }, true);
         }
 
@@ -160,34 +208,34 @@ namespace Rnwood.Smtp4dev.Server
                 sessionsHub.OnSessionsChanged().Wait();
             }, true);
         }
-        
+
         private async Task OnMessageReceived(object sender, MessageEventArgs e)
         {
-			using (Stream stream = e.Message.GetData().Result)
-			{
-				string to = string.Join(", ", e.Message.Recipients);
-				Console.WriteLine($"Message received. Client address {e.Message.Session.ClientAddress}. From {e.Message.From}. To {to}.");
-				Message message = new MessageConverter().ConvertAsync(stream, e.Message.From, to).Result;
-				message.IsUnread = true;
+            using (Stream stream = e.Message.GetData().Result)
+            {
+                string to = string.Join(", ", e.Message.Recipients);
+                Console.WriteLine($"Message received. Client address {e.Message.Session.ClientAddress}. From {e.Message.From}. To {to}.");
+                Message message = new MessageConverter().ConvertAsync(stream, e.Message.From, to).Result;
+                message.IsUnread = true;
 
-				await QueueTask(() =>
-				{
-					Console.WriteLine("Processing received message");
-					Smtp4devDbContext dbContext = dbContextFactory();
+                await QueueTask(() =>
+                {
+                    Console.WriteLine("Processing received message");
+                    Smtp4devDbContext dbContext = dbContextFactory();
 
-					Session dbSession = dbContext.Sessions.Find(activeSessionsToDbId[e.Message.Session]);
-					message.Session = dbSession;
-					dbContext.Messages.Add(message);
+                    Session dbSession = dbContext.Sessions.Find(activeSessionsToDbId[e.Message.Session]);
+                    message.Session = dbSession;
+                    dbContext.Messages.Add(message);
 
-					dbContext.SaveChanges();
+                    dbContext.SaveChanges();
 
-					Smtp4devServer.TrimMessages(dbContext, serverOptions.Value);
-					dbContext.SaveChanges();
-					messagesHub.OnMessagesChanged().Wait();
-					Console.WriteLine("Processing received message DONE");
+                    Smtp4devServer.TrimMessages(dbContext, serverOptions.Value);
+                    dbContext.SaveChanges();
+                    messagesHub.OnMessagesChanged().Wait();
+                    Console.WriteLine("Processing received message DONE");
 
-				}, false).ConfigureAwait(false);
-			}
+                }, false).ConfigureAwait(false);
+            }
         }
 
         public Task DeleteMessage(Guid id)
@@ -227,7 +275,6 @@ namespace Rnwood.Smtp4dev.Server
 
         private Task ProcessingTaskWork()
         {
-            Console.WriteLine("Message/session consuming thread running.");
             while (!processingQueue.IsCompleted && !priorityProcessingQueue.IsCompleted)
             {
                 Action nextItem;
@@ -245,10 +292,9 @@ namespace Rnwood.Smtp4dev.Server
                     throw;
                 }
 
-				nextItem();
+                nextItem();
             }
 
-            Console.WriteLine("Message/session consuming thread ending.");
             return Task.CompletedTask;
         }
 
@@ -287,7 +333,8 @@ namespace Rnwood.Smtp4dev.Server
 
             smtpServer.Start();
 
-            Console.WriteLine($"SMTP Server is listening on port {smtpServer.PortNumber}. Keeping last {serverOptions.Value.NumberOfMessagesToKeep} messages and {serverOptions.Value.NumberOfSessionsToKeep} sessions.");
+            string certDesc = string.IsNullOrEmpty(serverOptions.Value.TlsCertificate) ? "<self signed>" : serverOptions.Value.TlsCertificate;
+            Console.WriteLine($"SMTP Server is listening on port {smtpServer.PortNumber} with TLS mode '{serverOptions.Value.TlsMode}' cert '{certDesc}'.\nKeeping last {serverOptions.Value.NumberOfMessagesToKeep} messages and {serverOptions.Value.NumberOfSessionsToKeep} sessions.");
 
         }
     }
