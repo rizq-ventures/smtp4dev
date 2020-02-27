@@ -27,7 +27,6 @@
 		<PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="3.1.2" />
 		<PackageReference Include="MimeKit" Version="2.5.1" />
 		<PackageReference Include="Portable.BouncyCastle" Version="1.8.5.2" />
-		<PackageReference Include="Rnwood.SmtpServer" Version="3.1.0-ci0502" />
 		<PackageReference Include="System.Data.SQLite" Version="1.0.112" />
 		<PackageReference Include="System.Linq.Dynamic.Core" Version="1.0.20" />
 		<PackageReference Include="System.Runtime.Extensions" Version="4.3.1" />
@@ -104,6 +103,12 @@
 
 	<ItemGroup>
 	  <None Include="appsettings.Development.json" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <Reference Include="Rnwood.SmtpServer">
+	    <HintPath>..\..\smtpserver\Rnwood.SmtpServer\bin\Debug\netstandard2.0\Rnwood.SmtpServer.dll</HintPath>
+	  </Reference>
 	</ItemGroup>
 
 	<ItemGroup>

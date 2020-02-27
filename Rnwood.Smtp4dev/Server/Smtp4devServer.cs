@@ -4,6 +4,7 @@ using Org.BouncyCastle.Crypto;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Prng;
 using Org.BouncyCastle.Math;
+using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
 using Org.BouncyCastle.Utilities;
 using Org.BouncyCastle.X509;
@@ -17,6 +18,7 @@ using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography.X509Certificates;
 using System.Threading.Tasks;
 
 namespace Rnwood.Smtp4dev.Server
@@ -68,9 +70,20 @@ namespace Rnwood.Smtp4dev.Server
             keyPairGenerator.Init(keyGenerationParameters);
             AsymmetricCipherKeyPair keypair = keyPairGenerator.GenerateKeyPair();
             certGenerator.SetPublicKey(keypair.Public);
-            X509Certificate certificate = certGenerator.Generate(keypair.Private, random);
 
-            return new System.Security.Cryptography.X509Certificates.X509Certificate(certificate.GetEncoded());
+            var cert = certGenerator.Generate(keypair.Private, random);
+
+
+            Pkcs12Store store = new Pkcs12Store();
+            var certificateEntry = new X509CertificateEntry(cert);
+            store.SetCertificateEntry("cert", certificateEntry);
+            store.SetKeyEntry("cert", new AsymmetricKeyEntry(keypair.Private), new[] { certificateEntry });
+            var stream = new MemoryStream();
+            store.Save(stream, "".ToCharArray(), random);
+
+            return new X509Certificate2(
+                stream.ToArray(), "",
+                X509KeyStorageFlags.PersistKeySet | X509KeyStorageFlags.Exportable);
         }
 
         private IOptions<ServerOptions> serverOptions;
